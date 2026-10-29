@@ -131,117 +131,39 @@ function Auth({ done }) {
   );
 }
 function Lab() {
-  const [tab, setTab] = useState("Text Encrypt / Decrypt"),
-    [input, setInput] = useState("SecureX protects this message."),
-    [result, setResult] = useState(null),
-    [imageResult, setImageResult] = useState(null),
-    [bench, setBench] = useState([]);
-  const run = async () => {
-    const a = enc.encode(input),
-      key = crypto.getRandomValues(new Uint8Array(32)),
-      iv = crypto.getRandomValues(new Uint8Array(12)),
-      k = await crypto.subtle.importKey("raw", key, "AES-GCM", false, [
-        "encrypt",
-        "decrypt",
-      ]);
-    let t = performance.now(),
-      c = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, k, a),
-      et = performance.now() - t;
-    t = performance.now();
-    const p = await crypto.subtle.decrypt({ name: "AES-GCM", iv }, k, c),
-      dt = performance.now() - t;
-    const changed = enc.encode(
-        input.slice(0, -1) + (input.at(-1) === "!" ? "?" : "!"),
-      ),
-      c2 = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, k, changed);
-    let diff = 0;
-    new Uint8Array(c).forEach((v, i) => {
-      let n = v ^ new Uint8Array(c2)[i];
-      while (n) {
-        diff += n & 1;
-        n >>>= 1;
-      }
-    });
-    const cipherOne = b64(c), cipherTwo = b64(c2), changedChars = [...cipherOne].filter((char, index) => char !== cipherTwo[index]).length;
-    setResult({
-      bytes: a.length,
-      et,
-      dt,
-      cipher: b64(c).slice(0, 96) + "...",
-      diff,
-      total: new Uint8Array(c).length * 8,
-      changedChars,
-      cipherChars: cipherOne.length,
-      plain: dec.decode(p),
-      hash: await digest(input),
-      changedHash: await digest(input + "!"),
-    });
+  const [tab, setTab] = useState("Text Encrypt / Decrypt"), [input, setInput] = useState("SecureX protects this message."), [textRun, setTextRun] = useState(null), [metrics, setMetrics] = useState(null), [hashRun, setHashRun] = useState(null), [signatureRun, setSignatureRun] = useState(null), [imageResult, setImageResult] = useState(null), [bench, setBench] = useState([]), [busy, setBusy] = useState(false);
+  const randomBytes = (size) => { const data = new Uint8Array(size); for (let offset = 0; offset < size; offset += 65536) crypto.getRandomValues(data.subarray(offset, Math.min(offset + 65536, size))); return data; };
+  const changedBits = (a, b) => { let count = 0; for (let i = 0; i < Math.min(a.length, b.length); i++) { let value = a[i] ^ b[i]; while (value) { count += value & 1; value >>>= 1; } } return count; };
+  const changedChars = (a, b) => [...a].filter((char, index) => char !== b[index]).length;
+  const aesGcm = async (data) => { const key = await crypto.subtle.generateKey({ name: "AES-GCM", length: 256 }, true, ["encrypt", "decrypt"]), iv = randomBytes(12); let start = performance.now(); const cipher = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, data), encryptMs = performance.now() - start; start = performance.now(); const plain = await crypto.subtle.decrypt({ name: "AES-GCM", iv }, key, cipher), decryptMs = performance.now() - start; return { cipher, plain, encryptMs, decryptMs }; };
+  const runText = async () => { const data = enc.encode(input || " "), r = await aesGcm(data); setTextRun({ ...r, bytes: data.byteLength, cipherText: b64(r.cipher), plain: dec.decode(r.plain) }); };
+  const runMetrics = async () => {
+    const original = enc.encode(input || " "), modified = new Uint8Array(original); modified[0] ^= 1;
+    const keyA = randomBytes(32), keyB = new Uint8Array(keyA); keyB[0] ^= 1; const iv = new Uint8Array(16);
+    const encryptCbc = async (keyBytes, data) => { const key = await crypto.subtle.importKey("raw", keyBytes, { name: "AES-CBC" }, false, ["encrypt"]); return new Uint8Array(await crypto.subtle.encrypt({ name: "AES-CBC", iv }, key, data)); };
+    const cipherA = await encryptCbc(keyA, original), cipherPlainChange = await encryptCbc(keyA, modified), cipherKeyChange = await encryptCbc(keyB, original);
+    const base64A = b64(cipherA), base64B = b64(cipherPlainChange), totalBits = cipherA.length * 8;
+    setMetrics({ original: dec.decode(original), modified: dec.decode(modified), diffusionBits: changedBits(cipherA, cipherPlainChange), confusionBits: changedBits(cipherA, cipherKeyChange), totalBits, diffusionChars: changedChars(base64A, base64B), totalChars: base64A.length, cipherA: base64A.slice(0, 100), cipherB: base64B.slice(0, 100) });
   };
-  const runImage = async (file) => {
-    if (!file) return;
-    const raw = await file.arrayBuffer(), key = await crypto.subtle.generateKey({ name: "AES-GCM", length: 256 }, true, ["encrypt", "decrypt"]), iv = crypto.getRandomValues(new Uint8Array(12));
-    let t = performance.now(), cipher = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, raw), encryptionMs = performance.now() - t;
-    t = performance.now(); const plain = await crypto.subtle.decrypt({ name: "AES-GCM", iv }, key, cipher), decryptMs = performance.now() - t;
-    setImageResult({ name: file.name, bytes: raw.byteLength, encryptionMs, decryptMs, cipher: b64(cipher), original: URL.createObjectURL(file), decrypted: URL.createObjectURL(new Blob([plain], { type: file.type })) });
+  const runHash = async () => {
+    const source = enc.encode(input || " "), changed = enc.encode((input || " ") + "!"), start = performance.now(), digestA = await hashBytes(source), generationMs = performance.now() - start, changedDigest = await hashBytes(changed);
+    const seen = new Map(); let collision = null; for (let i = 0; i < 5000 && !collision; i++) { const candidate = `trial-${i}`; const d = await hashBytes(enc.encode(candidate)); const short = d.slice(0, 3); if (seen.has(short) && seen.get(short) !== candidate) collision = { prefix: short, first: seen.get(short), second: candidate, digestOne: await hashBytes(enc.encode(seen.get(short))), digestTwo: d }; else seen.set(short, candidate); }
+    setHashRun({ digestA, changedDigest, generationMs, source: input || " ", changed: (input || " ") + "!", collision });
   };
-  const runBench = async () => { const rows = []; for (const bytes of [1024, 10000, 100000, 1000000]) { const data = crypto.getRandomValues(new Uint8Array(bytes)), key = await crypto.subtle.generateKey({ name: "AES-GCM", length: 256 }, true, ["encrypt", "decrypt"]), iv = crypto.getRandomValues(new Uint8Array(12)); let t = performance.now(), c = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, data), encMs = performance.now()-t; t=performance.now(); await crypto.subtle.decrypt({ name:"AES-GCM", iv },key,c); rows.push({bytes,encMs,decMs:performance.now()-t}); } setBench(rows); };
-  return (
-    <section className="page">
-      <h2>Security Lab / {tab}</h2>
-      <nav className="tabs">
-        {[
-          "Text Encrypt / Decrypt",
-          "Text Metrics",
-          "Text Performance",
-          "Image Encrypt / Decrypt",
-          "Hash Analysis",
-          "Digital Signature",
-        ].map((x) => (
-          <button onClick={() => setTab(x)}>{x}</button>
-        ))}
-      </nav>
-      {tab === "Image Encrypt / Decrypt" ? <><input type="file" accept="image/png,image/jpeg" onChange={(e) => runImage(e.target.files[0])} />{imageResult && <><div className="cards"><article><b>{imageResult.bytes}</b><small>image bytes</small></article><article><b>{imageResult.encryptionMs.toFixed(2)} ms</b><small>AES-GCM encryption</small></article><article><b>{imageResult.decryptMs.toFixed(2)} ms</b><small>AES-GCM decryption</small></article></div><div className="previews"><figure><img src={imageResult.original}/><figcaption>Original</figcaption></figure><figure><img src={imageResult.decrypted}/><figcaption>Decrypted</figcaption></figure></div><pre>Ciphertext (Base64): {imageResult.cipher.slice(0,500)}…</pre></>}</> : tab === "Text Performance" ? <><button onClick={runBench}>Run AES-GCM performance benchmark</button>{bench.length>0 && <table><thead><tr><th>Bytes</th><th>Encrypt</th><th>Decrypt</th><th>Encrypt speed</th></tr></thead><tbody>{bench.map(r=><tr key={r.bytes}><td>{r.bytes}</td><td>{r.encMs.toFixed(2)} ms</td><td>{r.decMs.toFixed(2)} ms</td><td>{(r.bytes/(r.encMs/1000)).toFixed(0)} B/s</td></tr>)}</tbody></table>}</> : <><textarea value={input} onChange={(e) => setInput(e.target.value)} /><button onClick={run}>Run measured experiment</button></>}
-      {result && tab !== "Image Encrypt / Decrypt" && tab !== "Text Performance" && (
-        <div className="cards">
-          <article>
-            <b>{result.bytes}</b>
-            <small>input bytes</small>
-          </article>
-          <article>
-            <b>{result.et.toFixed(3)} ms</b>
-            <small>AES-GCM encryption</small>
-          </article>
-          <article>
-            <b>{result.dt.toFixed(3)} ms</b>
-            <small>AES-GCM decryption</small>
-          </article>
-          <article>
-            <b>{(result.bytes / (result.et / 1000 || 0.001)).toFixed(0)} B/s</b>
-            <small>encryption throughput</small>
-          </article>
-          <article>
-            <b>{((result.diff / result.total) * 100).toFixed(2)}%</b>
-            <small>diffusion / avalanche bit change</small>
-          </article>
-          <article>
-            <b>{((result.changedChars / result.cipherChars) * 100).toFixed(2)}%</b>
-            <small>changed ciphertext characters</small>
-          </article>
-        </div>
-      )}{" "}
-      {result && (
-        <pre>
-          {tab === "Hash Analysis" ? "SHA-256 digest: " + result.hash + "\nChanged-input digest: " + result.changedHash + "\n\nPreimage, second-preimage and collision resistance are SHA-256 security properties; this demonstration shows that changed input produces a changed digest." : tab === "Digital Signature" ? "Chat messages use RSA-PSS + SHA-256. Send a new message from a newly registered account and check Security Details for actual signature generation and verification times." : "Ciphertext (Base64): " + result.cipher + "\n\nDecrypted plaintext: " + result.plain}
-        </pre>
-      )}
-      <p className="note">
-        *Educational controlled AES-GCM experiment with a fixed test nonce only;
-        SecureX messaging always uses a fresh random nonce. SHA-256 properties
-        (preimage, second-preimage and collision resistance) are computational
-        security goals, not proven by this bounded experiment.
-      </p>
-    </section>
-  );
+  const runSignature = async () => { const data = enc.encode(input || " "), pair = await crypto.subtle.generateKey({ name: "RSA-PSS", modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: "SHA-256" }, false, ["sign", "verify"]); let start = performance.now(); const signature = await crypto.subtle.sign({ name: "RSA-PSS", saltLength: 32 }, pair.privateKey, data), generationMs = performance.now() - start; start = performance.now(); const valid = await crypto.subtle.verify({ name: "RSA-PSS", saltLength: 32 }, pair.publicKey, signature, data), verificationMs = performance.now() - start; const altered = new Uint8Array(data); altered[0] ^= 1; const tamperedValid = await crypto.subtle.verify({ name: "RSA-PSS", saltLength: 32 }, pair.publicKey, signature, altered); setSignatureRun({ generationMs, verificationMs, valid, tamperedValid }); };
+  const runImage = async (file) => { if (!file) return; const data = await file.arrayBuffer(), r = await aesGcm(data); setImageResult({ ...r, bytes: data.byteLength, name: file.name, original: URL.createObjectURL(file), decrypted: URL.createObjectURL(new Blob([r.plain], { type: file.type })), cipherText: b64(r.cipher) }); };
+  const runBench = async () => { setBusy(true); try { const rows = []; for (const bytes of [1024, 10000, 100000, 500000, 1000000]) { const r = await aesGcm(randomBytes(bytes)); rows.push({ bytes, encryptMs: r.encryptMs, decryptMs: r.decryptMs }); } setBench(rows); } finally { setBusy(false); } };
+  const chart = (label, accessor, suffix) => { const max = Math.max(...bench.map(accessor), 1); return <article className="chart"><b>{label}</b>{bench.map((row) => <div className="chart-row" key={row.bytes}><span>{row.bytes >= 1000000 ? "1 MB" : row.bytes / 1000 + " KB"}</span><i style={{ width: `${Math.max(3, (accessor(row) / max) * 100)}%` }} /><em>{accessor(row).toFixed(1)}{suffix}</em></div>)}</article>; };
+  const tabs = ["Text Encrypt / Decrypt", "Text Metrics", "Text Performance", "Image Encrypt / Decrypt", "Hash Analysis", "Digital Signature"];
+  return <section className="page lab"><h2>Security Lab / {tab}</h2><nav className="tabs">{tabs.map((name) => <button className={tab === name ? "active" : ""} onClick={() => setTab(name)} key={name}>{name}</button>)}</nav>
+    {tab !== "Image Encrypt / Decrypt" && tab !== "Text Performance" && <textarea value={input} onChange={(event) => setInput(event.target.value)} />}
+    {tab === "Text Encrypt / Decrypt" && <><button onClick={runText}>Encrypt and decrypt text</button>{textRun && <><div className="cards"><article><b>{textRun.bytes}</b><small>plaintext bytes</small></article><article><b>{textRun.encryptMs.toFixed(3)} ms</b><small>AES-GCM encryption</small></article><article><b>{textRun.decryptMs.toFixed(3)} ms</b><small>AES-GCM decryption</small></article><article><b>{(textRun.bytes / (textRun.encryptMs / 1000)).toFixed(0)} B/s</b><small>encryption speed</small></article></div><div className="lab-columns"><pre>PLAINTEXT{`\n`}{input}</pre><pre>CIPHERTEXT (Base64){`\n`}{textRun.cipherText}</pre><pre>DECRYPTED PLAINTEXT{`\n`}{textRun.plain}</pre></div></>}</>}
+    {tab === "Text Metrics" && <><button onClick={runMetrics}>Run controlled AES metrics</button><p className="note">This is a controlled AES-CBC measurement with the same IV so ciphertexts can be compared. SecureX chat itself uses AES-GCM with a fresh random IV for security.</p>{metrics && <><div className="cards"><article><b>{((metrics.diffusionBits / metrics.totalBits) * 100).toFixed(2)}%</b><small>diffusion: plaintext one-bit change</small></article><article><b>{((metrics.confusionBits / metrics.totalBits) * 100).toFixed(2)}%</b><small>confusion: key one-bit change</small></article><article><b>{((metrics.diffusionBits / metrics.totalBits) * 100).toFixed(2)}%</b><small>avalanche effect (bit level)</small></article><article><b>{((metrics.diffusionChars / metrics.totalChars) * 100).toFixed(2)}%</b><small>changed Base64 ciphertext chars</small></article></div><div className="lab-columns"><pre>Original input{`\n`}{metrics.original}{`\n\n`}One-bit modified input{`\n`}{metrics.modified}</pre><pre>Ciphertext A{`\n`}{metrics.cipherA}</pre><pre>Ciphertext B{`\n`}{metrics.cipherB}{`\n\n`}Target: about 50% changed bits. Character percentage is shown as a measurement, not falsely guaranteed to be 100%.</pre></div></>}</>}
+    {tab === "Text Performance" && <><button onClick={runBench} disabled={busy}>{busy ? "Benchmarking…" : "Run AES-GCM performance benchmark"}</button>{bench.length > 0 && <><table><thead><tr><th>Payload</th><th>Encrypt</th><th>Decrypt</th><th>Encrypt speed</th><th>Decrypt speed</th></tr></thead><tbody>{bench.map((row) => <tr key={row.bytes}><td>{row.bytes.toLocaleString()} bytes</td><td>{row.encryptMs.toFixed(2)} ms</td><td>{row.decryptMs.toFixed(2)} ms</td><td>{(row.bytes / (row.encryptMs / 1000)).toFixed(0)} B/s</td><td>{(row.bytes / (row.decryptMs / 1000)).toFixed(0)} B/s</td></tr>)}</tbody></table><div className="charts">{chart("Encryption time", (r) => r.encryptMs, " ms")}{chart("Decryption time", (r) => r.decryptMs, " ms")}{chart("Encryption throughput", (r) => r.bytes / (r.encryptMs / 1000) / 1000, " KB/s")}{chart("Decryption throughput", (r) => r.bytes / (r.decryptMs / 1000) / 1000, " KB/s")}</div></>}</>}
+    {tab === "Image Encrypt / Decrypt" && <><input type="file" accept="image/png,image/jpeg" onChange={(event) => runImage(event.target.files[0])} />{imageResult && <><div className="cards"><article><b>{imageResult.bytes}</b><small>image plaintext bytes</small></article><article><b>{imageResult.encryptMs.toFixed(2)} ms</b><small>AES-GCM encryption</small></article><article><b>{imageResult.decryptMs.toFixed(2)} ms</b><small>AES-GCM decryption</small></article></div><div className="previews"><figure><img src={imageResult.original}/><figcaption>Original image</figcaption></figure><figure><img src={imageResult.decrypted}/><figcaption>Decrypted image</figcaption></figure></div><pre>CIPHERTEXT (Base64){`\n`}{imageResult.cipherText.slice(0, 600)}…</pre></>}</>}
+    {tab === "Hash Analysis" && <><button onClick={runHash}>Run SHA-256 resistance demonstration</button>{hashRun && <><div className="cards"><article><b>{hashRun.generationMs.toFixed(3)} ms</b><small>SHA-256 generation time</small></article><article><b>256 bits</b><small>digest length</small></article><article><b>{hashRun.collision ? "FOUND" : "NOT FOUND"}</b><small>toy 16-bit-prefix collision only</small></article></div><div className="lab-columns"><pre>PREIMAGE RESISTANCE{`\n`}Input: {hashRun.source}{`\n`}Digest: {hashRun.digestA}{`\n\n`}Given only the digest, recovering this exact input requires infeasible guessing for SHA-256.</pre><pre>SECOND-PREIMAGE RESISTANCE{`\n`}Changed input: {hashRun.changed}{`\n`}Digest: {hashRun.changedDigest}{`\n\n`}The different input produces a different digest; finding another input with the same full digest is infeasible.</pre><pre>COLLISION RESISTANCE{`\n`}{hashRun.collision ? `Toy 16-bit prefix collision:\n${hashRun.collision.first}\n${hashRun.collision.second}\nPrefix: ${hashRun.collision.prefix}\n\nTheir full SHA-256 digests remain different.` : "No toy prefix collision in 5,000 trials."}{`\n\n`}This deliberately short prefix is only a classroom illustration. It is NOT a collision in full SHA-256.</pre></div></>}</>}
+    {tab === "Digital Signature" && <><button onClick={runSignature}>Run RSA-PSS signing test</button>{signatureRun && <div className="cards"><article><b>{signatureRun.generationMs.toFixed(2)} ms</b><small>signature generation</small></article><article><b>{signatureRun.verificationMs.toFixed(2)} ms</b><small>signature verification</small></article><article><b>{signatureRun.valid ? "VALID" : "INVALID"}</b><small>original message</small></article><article><b>{signatureRun.tamperedValid ? "VALID" : "INVALID"}</b><small>tampered message (must be invalid)</small></article></div>}<p className="note">Chat stores RSA-PSS signature, generation time, and receiver verification result for every new message from a freshly registered account.</p></>}
+  </section>;
 }
 function Chat({ session }) {
   const [people, setPeople] = useState([]),
