@@ -395,3 +395,4 @@ td {
     display: none;
   }
 }
+.lab-columns{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin-top:18px}.lab-columns pre{min-height:160px}.lab .previews figure{max-width:31%;overflow:auto}.lab .previews pre{max-height:220px;font-size:11px}@media(max-width:800px){.lab-columns{grid-template-columns:1fr}.lab .previews figure{max-width:100%}}

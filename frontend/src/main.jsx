@@ -48,6 +48,7 @@ function Auth({ done }) {
         body = {
           ...form,
           publicKey: identity.publicKey,
+          signingPublicKey: identity.signingPublicKey,
           privateKeyBackup: identity.backup,
         };
       } else body = { identity: form.identity, password: form.password };
@@ -130,9 +131,11 @@ function Auth({ done }) {
   );
 }
 function Lab() {
-  const [tab, setTab] = useState("Text encryption"),
+  const [tab, setTab] = useState("Text Encrypt / Decrypt"),
     [input, setInput] = useState("SecureX protects this message."),
-    [result, setResult] = useState(null);
+    [result, setResult] = useState(null),
+    [imageResult, setImageResult] = useState(null),
+    [bench, setBench] = useState([]);
   const run = async () => {
     const a = enc.encode(input),
       key = crypto.getRandomValues(new Uint8Array(32)),
@@ -159,6 +162,7 @@ function Lab() {
         n >>>= 1;
       }
     });
+    const cipherOne = b64(c), cipherTwo = b64(c2), changedChars = [...cipherOne].filter((char, index) => char !== cipherTwo[index]).length;
     setResult({
       bytes: a.length,
       et,
@@ -166,26 +170,38 @@ function Lab() {
       cipher: b64(c).slice(0, 96) + "...",
       diff,
       total: new Uint8Array(c).length * 8,
+      changedChars,
+      cipherChars: cipherOne.length,
       plain: dec.decode(p),
       hash: await digest(input),
+      changedHash: await digest(input + "!"),
     });
   };
+  const runImage = async (file) => {
+    if (!file) return;
+    const raw = await file.arrayBuffer(), key = await crypto.subtle.generateKey({ name: "AES-GCM", length: 256 }, true, ["encrypt", "decrypt"]), iv = crypto.getRandomValues(new Uint8Array(12));
+    let t = performance.now(), cipher = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, raw), encryptionMs = performance.now() - t;
+    t = performance.now(); const plain = await crypto.subtle.decrypt({ name: "AES-GCM", iv }, key, cipher), decryptMs = performance.now() - t;
+    setImageResult({ name: file.name, bytes: raw.byteLength, encryptionMs, decryptMs, cipher: b64(cipher), original: URL.createObjectURL(file), decrypted: URL.createObjectURL(new Blob([plain], { type: file.type })) });
+  };
+  const runBench = async () => { const rows = []; for (const bytes of [1024, 10000, 100000, 1000000]) { const data = crypto.getRandomValues(new Uint8Array(bytes)), key = await crypto.subtle.generateKey({ name: "AES-GCM", length: 256 }, true, ["encrypt", "decrypt"]), iv = crypto.getRandomValues(new Uint8Array(12)); let t = performance.now(), c = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, data), encMs = performance.now()-t; t=performance.now(); await crypto.subtle.decrypt({ name:"AES-GCM", iv },key,c); rows.push({bytes,encMs,decMs:performance.now()-t}); } setBench(rows); };
   return (
     <section className="page">
       <h2>Security Lab / {tab}</h2>
       <nav className="tabs">
         {[
-          "Text encryption",
-          "Confusion  -  Diffusion  -  Avalanche",
-          "Hash analysis",
-          "Digital signature",
+          "Text Encrypt / Decrypt",
+          "Text Metrics",
+          "Text Performance",
+          "Image Encrypt / Decrypt",
+          "Hash Analysis",
+          "Digital Signature",
         ].map((x) => (
           <button onClick={() => setTab(x)}>{x}</button>
         ))}
       </nav>
-      <textarea value={input} onChange={(e) => setInput(e.target.value)} />
-      <button onClick={run}>Run measured experiment</button>
-      {result && (
+      {tab === "Image Encrypt / Decrypt" ? <><input type="file" accept="image/png,image/jpeg" onChange={(e) => runImage(e.target.files[0])} />{imageResult && <><div className="cards"><article><b>{imageResult.bytes}</b><small>image bytes</small></article><article><b>{imageResult.encryptionMs.toFixed(2)} ms</b><small>AES-GCM encryption</small></article><article><b>{imageResult.decryptMs.toFixed(2)} ms</b><small>AES-GCM decryption</small></article></div><div className="previews"><figure><img src={imageResult.original}/><figcaption>Original</figcaption></figure><figure><img src={imageResult.decrypted}/><figcaption>Decrypted</figcaption></figure></div><pre>Ciphertext (Base64): {imageResult.cipher.slice(0,500)}…</pre></>}</> : tab === "Text Performance" ? <><button onClick={runBench}>Run AES-GCM performance benchmark</button>{bench.length>0 && <table><thead><tr><th>Bytes</th><th>Encrypt</th><th>Decrypt</th><th>Encrypt speed</th></tr></thead><tbody>{bench.map(r=><tr key={r.bytes}><td>{r.bytes}</td><td>{r.encMs.toFixed(2)} ms</td><td>{r.decMs.toFixed(2)} ms</td><td>{(r.bytes/(r.encMs/1000)).toFixed(0)} B/s</td></tr>)}</tbody></table>}</> : <><textarea value={input} onChange={(e) => setInput(e.target.value)} /><button onClick={run}>Run measured experiment</button></>}
+      {result && tab !== "Image Encrypt / Decrypt" && tab !== "Text Performance" && (
         <div className="cards">
           <article>
             <b>{result.bytes}</b>
@@ -205,13 +221,17 @@ function Lab() {
           </article>
           <article>
             <b>{((result.diff / result.total) * 100).toFixed(2)}%</b>
-            <small>analysis-only avalanche*</small>
+            <small>diffusion / avalanche bit change</small>
+          </article>
+          <article>
+            <b>{((result.changedChars / result.cipherChars) * 100).toFixed(2)}%</b>
+            <small>changed ciphertext characters</small>
           </article>
         </div>
       )}{" "}
       {result && (
         <pre>
-          {tab === "Hash analysis" ? "SHA-256: " + result.hash : result.cipher}
+          {tab === "Hash Analysis" ? "SHA-256 digest: " + result.hash + "\nChanged-input digest: " + result.changedHash + "\n\nPreimage, second-preimage and collision resistance are SHA-256 security properties; this demonstration shows that changed input produces a changed digest." : tab === "Digital Signature" ? "Chat messages use RSA-PSS + SHA-256. Send a new message from a newly registered account and check Security Details for actual signature generation and verification times." : "Ciphertext (Base64): " + result.cipher + "\n\nDecrypted plaintext: " + result.plain}
         </pre>
       )}
       <p className="note">
@@ -302,7 +322,9 @@ function Chat({ session }) {
         hashStart = performance.now(),
         hash = await hashBytes(bytes),
         hashMs = performance.now() - hashStart,
-        signature = await signBytes(bytes),
+        signature = session.priv.signingPrivate
+          ? await signBytes(bytes, session.priv.signingPrivate)
+          : null,
         t = performance.now(),
         secured = await encryptPayload(bytes, [session.user, target]),
         encryptionMs = performance.now() - t;
@@ -325,9 +347,13 @@ function Chat({ session }) {
               ),
               hash,
               hashMs,
-              signature: signature.signature,
-              signingPublicKey: signature.publicKey,
-              signatureMs: signature.ms,
+              ...(signature
+                ? {
+                    signature: signature.signature,
+                    signingPublicKey: session.user.signingPublicKey,
+                    signatureMs: signature.ms,
+                  }
+                : {}),
             },
           }),
         },
@@ -476,13 +502,20 @@ function Chat({ session }) {
         )}
       </main>
       {active && (
-        <SecurityDetails message={msgs[msgs.length - 1]} session={session} />
+        <SecurityDetails
+          message={msgs[msgs.length - 1]}
+          session={session}
+          conversation={active}
+        />
       )}
     </section>
   );
 }
-function SecurityDetails({ message, session }) {
+function SecurityDetails({ message, session, conversation }) {
   const [result, setResult] = useState(null);
+  const sender = conversation?.members?.find(
+    (member) => String(member._id) === String(message?.sender),
+  );
   useEffect(() => {
     let alive = true;
     setResult(null);
@@ -496,12 +529,12 @@ function SecurityDetails({ message, session }) {
           hash = await hashBytes(raw),
           hashMs = performance.now() - hashStart,
           signatureStart = performance.now(),
+          registeredSigningKey = sender?.signingPublicKey,
           signatureValid = message.metadata?.signature
-            ? await verifyBytes(
-                raw,
-                message.metadata.signature,
-                message.metadata.signingPublicKey,
-              )
+            ? registeredSigningKey &&
+              registeredSigningKey === message.metadata.signingPublicKey
+              ? await verifyBytes(raw, message.metadata.signature, registeredSigningKey)
+              : false
             : null,
           signatureVerifyMs = performance.now() - signatureStart;
         if (alive)
@@ -519,7 +552,7 @@ function SecurityDetails({ message, session }) {
     return () => {
       alive = false;
     };
-  }, [message?._id]);
+  }, [message?._id, sender?.signingPublicKey]);
   if (!message)
     return (
       <aside className="security-panel">
@@ -543,11 +576,9 @@ function SecurityDetails({ message, session }) {
         <small>
           AES-256-GCM · {plain} plaintext bytes · {cipher} ciphertext bytes
         </small>
-        <small>
-          Encryption: {m.encryptionMs?.toFixed?.(2) || "-"} ms ·{" "}
-          {m.encryptionMs ? (plain / (m.encryptionMs / 1000)).toFixed(0) : "-"}{" "}
-          B/s
-        </small>
+        <small>{Number.isFinite(m.encryptionMs)
+          ? `Encryption: ${m.encryptionMs.toFixed(2)} ms · ${(plain / (m.encryptionMs / 1000)).toFixed(0)} B/s`
+          : "Encryption metrics not recorded for this older message"}</small>
         <code>{(message.encrypted?.cipher || "").slice(0, 44)}…</code>
       </section>
       <section>
@@ -567,6 +598,7 @@ function SecurityDetails({ message, session }) {
             ? m.signatureMs.toFixed(2) + " ms"
             : "Not available for older message"}
         </small>
+        <small>Sender identity key: {sender?.signingPublicKey ? "registered" : "not available for this account"}</small>
       </section>
       <section>
         <b>RECEIVER · INTEGRITY & DECRYPTION</b>
@@ -603,6 +635,9 @@ function SecurityDetails({ message, session }) {
               : "INVALID"}{" "}
           · verification {result?.signatureVerifyMs?.toFixed(2) || "-"} ms
         </small>
+        {m.signature && !sender?.signingPublicKey && (
+          <small>Signature cannot be trusted: the sender has no registered signing key.</small>
+        )}
       </section>
       <section>
         <b>KEY SECURITY</b>
@@ -732,3 +767,7 @@ function App() {
   );
 }
 createRoot(document.getElementById("root")).render(<App />);
+
+
+
+
